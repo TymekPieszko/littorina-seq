@@ -10,7 +10,7 @@ wget https://raw.githubusercontent.com/TymekPieszko/littorina-seq/main/get_fastq
 
 The only required argument is `--sheet_url` - just paste the Google Docs URL! You can filter the dataset by categorical columns (i.e., not 'Timestamp', 'Latitude', 'Longitude' or 'Targeted_coverage') and request multiple categories (comma-delimited).
 
-```
+```bash
 # Fetch URLs
 python get_fastq_urls.py \
 --sheet_url paste-url-here \
