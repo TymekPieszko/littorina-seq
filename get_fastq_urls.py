@@ -1,20 +1,20 @@
 import pandas as pd
 import numpy as np
-import argparse, requests
+import argparse, warnings
+warnings.filterwarnings("ignore")
+import requests
 
 def remove_whitespace(df):
     for i in df.columns:
         if df[i].dtype == 'object':
             df[i] = df[i].str.strip()
 
-# First-stage parser: sheet URL
-parser = argparse.ArgumentParser()
-parser.add_argument("--sheet_url", type=str, required=True)
-args, remaining = parser.parse_known_args()
+# The sheet URL needs to be modifed for access
+sheet_url = "https://docs.google.com/spreadsheets/d/1f9gFjXnZfK1a6hQ7MO7ZWTgpzmxh5XNeOMdvVghkZzM/edit?gid=1574494561#gid=1574494561"
 
 # Convert sheet URL
 sheet_url = (
-    args.sheet_url
+    sheet_url
     .replace("/edit?", "/export?format=csv&")
     .split("#")[0]
 )
@@ -23,14 +23,12 @@ df = pd.read_csv(sheet_url, header=3)
 df = df.drop(columns=['Timestamp', 'Corresponder', 'Latitude', 'Longitude', 'Targeted_coverage'])
 df.columns = df.columns.str.lower()
 remove_whitespace(df)
-# print(df.columns)
 
-# Second-stage parser: arguments from df columns
+# Arguments from df columns
 parser = argparse.ArgumentParser()
-# parser.add_argument(f"--data", type=str, required=True)
 for column in df.columns:
     parser.add_argument(f"--{str(column).lower()}", type=str, required=False)
-args = vars(parser.parse_args(remaining))
+args = vars(parser.parse_args())
 
 # Filter
 for column, category in args.items():
@@ -51,56 +49,62 @@ if ids < n:
     print("-" * 50)
 
 # Get target accessions
-fastq_urls = {}
-accessions = df["biosample_id"]
-for acc in accessions:
-    acc = str(acc).strip()
+id_to_urls = {} # Dictionary to store BioSample ID - FASTQ URLs mapping. There will typically be multiple URLs per BioSample ID.
+url_to_size = {} # Dictionary to store the size of a FASTQ file associated with each URL.
+biosample_ids = df["biosample_id"]
+for id in biosample_ids:
+    id = str(id).strip()
     # print(acc)
 
     # ENA query
-    if acc.startswith(("SRR", "ERR", "DRR")):
-        query = f"run_accession={acc}"
-    elif acc.startswith("SRS"):
-        query = f"secondary_sample_accession={acc}"
+    if id.startswith(("SRR", "ERR", "DRR")):
+        query = f"run_accession={id}"
+    elif id.startswith("SRS"):
+        query = f"secondary_sample_accession={id}"
     else:
-        query = f"sample_accession={acc}"
+        query = f"sample_accession={id}"
 
     url = (
         "https://www.ebi.ac.uk/ena/portal/api/search"
         "?result=read_run"
         f"&query={query}"
-        "&fields=run_accession,fastq_ftp"
+        "&fields=run_accession,fastq_ftp,fastq_bytes"
         "&format=json"
     )
 
     r = requests.get(url)
     rows = r.json()
     
-    fastq_urls[acc] = []
+    id_to_urls[id] = []
     for row in rows:
         ftp_field = row.get("fastq_ftp", "")
+        size_field = row.get("fastq_bytes", "")
         if ftp_field:
-            for ftp in ftp_field.split(";"):
-                fastq_urls[acc].append("https://" + ftp)
+            for ftp, size in zip(ftp_field.split(";"), size_field.split(";")):
+                url = "https://" + ftp
+                id_to_urls[id].append(url)
+                url_to_size[url] = round(int(size) / 1024**3, 3) # This converts raw size in bytes to GiB 
 
 # Write URLs
 with open(f"fastq_urls.tsv", "w") as f:
-    for acc in fastq_urls.keys():
-        for url in fastq_urls[acc]:
-            f.write(df.loc[df["biosample_id"] == acc, "sample_id"].values[0] + "\t")
-            f.write(df.loc[df["biosample_id"] == acc, "species"].values[0] + "\t")
-            f.write(acc + "\t")
+    f.write("sample_id\tspecies\tbiosample_id\tsize_in_gib\tfastq_url\n")
+    for id in id_to_urls.keys():
+        for url in id_to_urls[id]:
+            f.write(df.loc[df["biosample_id"] == id, "sample_id"].values[0] + "\t")
+            f.write(df.loc[df["biosample_id"] == id, "species"].values[0] + "\t")
+            f.write(id + "\t")
+            f.write(str(url_to_size[url]) + "\t")
             f.write(url + "\n")
 
 # Write report
 with open(f"fastq_report.tsv", "w") as f:
     f.write("sample_id\tspecies\tbiosample_id\tfastq_num\n")
-    for acc in fastq_urls.keys():
-        f.write(df.loc[df["biosample_id"] == acc, "sample_id"].values[0] + "\t")
-        f.write(df.loc[df["biosample_id"] == acc, "species"].values[0] + "\t")
-        f.write(acc + "\t")
-        f.write(f"{len(fastq_urls[acc])}" + "\n") 
+    for id in id_to_urls.keys():
+        f.write(df.loc[df["biosample_id"] == id, "sample_id"].values[0] + "\t")
+        f.write(df.loc[df["biosample_id"] == id, "species"].values[0] + "\t")
+        f.write(id + "\t")
+        f.write(f"{len(id_to_urls[id])}" + "\n") 
 
 # Useful info
-print(f"Collected {sum([len(x) for x in fastq_urls.values()])} FASTQ URLs.")
+print(f"Collected {sum([len(x) for x in id_to_urls.values()])} FASTQ URLs.")
 print("-" * 50)
